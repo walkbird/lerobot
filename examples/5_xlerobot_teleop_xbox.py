@@ -15,7 +15,7 @@ import pygame
 
 from lerobot.robots.xlerobot import XLerobotConfig, XLerobot
 from lerobot.utils.robot_utils import busy_wait
-from lerobot.utils.visualization_utils import _init_rerun, log_rerun_data
+from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 from lerobot.model.SO101Robot import SO101Kinematics
 
 # Keymaps (semantic action: controller mapping) - Intuitive human control
@@ -77,6 +77,17 @@ HEAD_MOTOR_MAP = {
     "head_motor_1": "head_motor_1",
     "head_motor_2": "head_motor_2",
 }
+
+
+def discover_serial_ports():
+    """Return available serial port device paths sorted alphabetically."""
+    try:
+        from serial.tools import list_ports
+    except Exception as exc:
+        return [], exc
+
+    ports = {port.device for port in list_ports.comports() if getattr(port, "device", None)}
+    return sorted(ports), None
 
 class SimpleHeadControl:
     def __init__(self, initial_obs, kp=1):
@@ -402,18 +413,68 @@ def get_base_speed_control(joystick):
 
 def main():
     FPS = 30
-    robot_config = XLerobotConfig()
-    robot = XLerobot(robot_config)
-    try:
-        robot.connect()
-        print(f"[MAIN] Successfully connected to robot")
-    except Exception as e:
-        print(f"[MAIN] Failed to connect to robot: {e}")
-        print(robot_config)
-        print(robot)
-        return
+    available_ports, ports_error = discover_serial_ports()
+    if ports_error:
+        print(f"[MAIN] Could not auto-detect serial ports ({ports_error}). Please enter ports manually.")
+    elif available_ports:
+        print(f"[MAIN] Detected serial ports: {available_ports}")
+    else:
+        print("[MAIN] No serial ports detected automatically. Connect the robot or run `lerobot-find-port`.")
 
-    _init_rerun(session_name="xlerobot_teleop_xbox")
+    defaults = XLerobotConfig()
+
+    def pick_default(original, candidates, index):
+        if original in candidates:
+            return original
+        if index < len(candidates):
+            return candidates[index]
+        return original
+
+    port1_default = pick_default(defaults.port1, available_ports, 0)
+    port2_default = pick_default(defaults.port2, available_ports, 1)
+
+    def prompt_port(label, default_value):
+        response = input(f"{label} [{default_value}]: ").strip()
+        return response or default_value
+
+    port1 = prompt_port("Enter USB port for the left arm/head bus", port1_default)
+    port2 = prompt_port("Enter USB port for the right arm/base bus", port2_default)
+
+    robot = None
+    robot_config = None
+
+    while True:
+        robot_config = XLerobotConfig(port1=port1, port2=port2)
+        robot = XLerobot(robot_config)
+
+        try:
+            robot.connect()
+            print(f"[MAIN] Successfully connected to robot on ports {port1} and {port2}")
+            break
+        except ConnectionError as e:
+            print(f"[MAIN] Failed to connect with ports {port1} and {port2}: {e}")
+            available_ports, ports_error = discover_serial_ports()
+            if ports_error:
+                print(f"[MAIN] Could not refresh serial port list ({ports_error}).")
+            elif available_ports:
+                print(f"[MAIN] Updated serial port list: {available_ports}")
+            else:
+                print("[MAIN] Still no serial ports detected automatically.")
+
+            retry = input("Retry with different ports? (y/n): ").strip().lower()
+            if retry not in ("y", "yes"):
+                print("Exiting without connecting to the robot.")
+                return
+
+            port1 = prompt_port("Enter USB port for the left arm/head bus", port1)
+            port2 = prompt_port("Enter USB port for the right arm/base bus", port2)
+        except Exception as e:
+            print(f"[MAIN] Failed to connect to robot: {e}")
+            print(robot_config)
+            print(robot)
+            return
+
+    init_rerun(session_name="xlerobot_teleop_xbox")
 
     # Init XBOX controller
     pygame.init()

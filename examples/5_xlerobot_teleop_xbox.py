@@ -5,7 +5,7 @@ PYTHONPATH=src python -m lerobot.robots.xlerobot.xlerobot_host --robot.id=my_xle
 
 # To Run the teleop:
 '''
-PYTHONPATH=src python -m examples.xlerobot.teleoperate_XBOX
+PYTHONPATH=src python -m examples.xlerobot.teleoperate_PS4
 '''
 
 import time
@@ -25,14 +25,14 @@ LEFT_KEYMAP = {
     'y+': 'left_stick_right', 'y-': 'left_stick_left',
     # Left stick pressed controls left arm shoulder_pan
     'shoulder_pan+': 'left_stick_pressed_right', 'shoulder_pan-': 'left_stick_pressed_left',
-    # LB pressed controls left arm pitch and wrist_roll
-    'pitch+': 'lb_up', 'pitch-': 'lb_down',
-    'wrist_roll+': 'lb_right', 'wrist_roll-': 'lb_left',
-    # Left trigger controls left gripper
-    'gripper+': 'left_trigger',
+    # L1 pressed controls left arm pitch and wrist_roll
+    'pitch+': 'l1_up', 'pitch-': 'l1_down',
+    'wrist_roll+': 'l1_right', 'wrist_roll-': 'l1_left',
+    # L2 controls left gripper
+    'gripper+': 'l2',
     # Head motors
-    "head_motor_1+": 'x', "head_motor_1-": 'b',
-    "head_motor_2+": 'a', "head_motor_2-": 'y',
+    "head_motor_1+": 'square', "head_motor_1-": 'circle',
+    "head_motor_2+": 'cross', "head_motor_2-": 'triangle',
 }
 RIGHT_KEYMAP = {
     # Right stick controls right arm XY (when not pressed)
@@ -40,11 +40,11 @@ RIGHT_KEYMAP = {
     'y+': 'right_stick_right', 'y-': 'right_stick_left',
     # Right stick pressed controls right arm shoulder_pan
     'shoulder_pan+': 'right_stick_pressed_right', 'shoulder_pan-': 'right_stick_pressed_left',
-    # RB pressed controls right arm pitch and wrist_roll
-    'pitch+': 'rb_up', 'pitch-': 'rb_down',
-    'wrist_roll+': 'rb_right', 'wrist_roll-': 'rb_left',
-    # Right trigger controls right gripper
-    'gripper+': 'right_trigger',
+    # R1 pressed controls right arm pitch and wrist_roll
+    'pitch+': 'r1_up', 'pitch-': 'r1_down',
+    'wrist_roll+': 'r1_right', 'wrist_roll-': 'r1_left',
+    # R2 controls right gripper
+    'gripper+': 'r2',
 }
 
 # Base control keymap - Only forward/backward and rotate left/right
@@ -54,7 +54,52 @@ BASE_KEYMAP = {
 }
 
 # Global reset key for all components
-RESET_KEY = 'back'
+RESET_KEY = 'share'
+
+# Enable to print controller debugging information at runtime
+DEBUG_CONTROLLER = False
+
+_previous_debug_state = {
+    "left_actions": frozenset(),
+    "right_actions": frozenset(),
+    "buttons": tuple(),
+    "hat": (0, 0),
+    "axes": tuple(),
+    "base": tuple(),
+    "speed": None,
+}
+
+# Axis/button index maps for PS4 controllers (pygame 2.x reference layout documented in SDL2)
+PS4_AXIS_INDICES = {
+    "left_x": (0,),
+    "left_y": (1,),
+    "right_x": (2,),
+    "right_y": (3,),
+    "l2": (4,),
+    "r2": (5,),
+}
+
+PS4_BUTTON_INDICES = {
+    "cross": (0,),
+    "circle": (1,),
+    "square": (2,),
+    "triangle": (3,),
+    "share": (4,),
+    "ps": (5,),
+    "options": (6,),
+    "l3": (7,),
+    "r3": (8,),
+    "l1": (9,),
+    "r1": (10,),
+    "dpad_up": (11,),
+    "dpad_down": (12,),
+    "dpad_left": (13,),
+    "dpad_right": (14,),
+    "touchpad": (15,),
+    "l2_button": (),  # No dedicated digital button in reference layout
+    "r2_button": (),
+}
+
 
 LEFT_JOINT_MAP = {
     "shoulder_pan": "left_arm_shoulder_pan",
@@ -203,10 +248,12 @@ class SimpleTeleopArm:
         if key_state.get('gripper+'):
             # Trigger pressed - open gripper (0.1)
             self.target_positions["gripper"] = 2
-            print(f"[{self.prefix}] gripper: CLOSED")
+            if DEBUG_CONTROLLER:
+                print(f"[{self.prefix}] gripper: CLOSED")
         else:
             self.target_positions["gripper"] = 90
-            print(f"[{self.prefix}] gripper: auto-opening to {self.target_positions['gripper']:.1f}")
+            if DEBUG_CONTROLLER:
+                print(f"[{self.prefix}] gripper: auto-opening to {self.target_positions['gripper']:.1f}")
         
         if key_state.get('pitch+'):
             self.pitch += self.degree_step
@@ -258,116 +305,224 @@ class SimpleTeleopArm:
         return action
     
 
-# --- XBOX Controller Mapping ---
-def get_xbox_key_state(joystick, keymap):
+# --- PS4 Controller Mapping ---
+def read_ps4_snapshot(joystick):
     """
-    Map XBOX controller state to semantic action booleans using the provided keymap.
+    Capture current PS4 controller state (axes, buttons, hat).
     """
-    # Read axes, buttons, hats
     axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
     buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
-    hats = joystick.get_hat(0) if joystick.get_numhats() > 0 else (0, 0)
-    
-    # Get stick pressed states
-    left_stick_pressed = bool(buttons[9]) if len(buttons) > 9 else False
-    right_stick_pressed = bool(buttons[10]) if len(buttons) > 10 else False
-    lb_pressed = bool(buttons[4]) if len(buttons) > 4 else False
-    rb_pressed = bool(buttons[5]) if len(buttons) > 5 else False
+    hat = joystick.get_hat(0) if joystick.get_numhats() > 0 else (0, 0)
+    return {"axes": axes, "buttons": buttons, "hat": hat}
+
+
+def _axis_value(snapshot, axis_key):
+    """Return axis value across potential index mappings."""
+    axes = snapshot.get("axes", [])
+    indices = PS4_AXIS_INDICES.get(axis_key, ())
+    if isinstance(indices, int):
+        indices = (indices,)
+    for idx in indices:
+        if idx is None:
+            continue
+        if idx < len(axes):
+            return axes[idx]
+    return 0.0
+
+
+def _button_pressed(snapshot, button_key):
+    """Check whether any candidate index for the button is pressed."""
+    buttons = snapshot.get("buttons", [])
+    indices = PS4_BUTTON_INDICES.get(button_key, ())
+    if isinstance(indices, int):
+        indices = (indices,)
+    for idx in indices:
+        if idx is None:
+            continue
+        if idx < len(buttons) and buttons[idx]:
+            return True
+    return False
+
+
+def _dpad_direction_pressed(snapshot, direction):
+    """Return True if the requested D-pad direction is active."""
+    hat = snapshot.get("hat", (0, 0))
+    if direction == "up" and hat[1] == 1:
+        return True
+    if direction == "down" and hat[1] == -1:
+        return True
+    if direction == "left" and hat[0] == -1:
+        return True
+    if direction == "right" and hat[0] == 1:
+        return True
+
+    button_key = f"dpad_{direction}"
+    return _button_pressed(snapshot, button_key)
+
+
+def get_ps4_key_state(snapshot, keymap):
+    """
+    Map PS4 controller state to semantic action booleans using the provided keymap.
+    """
+    left_x = _axis_value(snapshot, "left_x")
+    left_y = _axis_value(snapshot, "left_y")
+    right_x = _axis_value(snapshot, "right_x")
+    right_y = _axis_value(snapshot, "right_y")
+    l2_axis = _axis_value(snapshot, "l2")
+    r2_axis = _axis_value(snapshot, "r2")
+
+    # Get stick pressed states and shoulder button states
+    left_stick_pressed = _button_pressed(snapshot, "l3")
+    right_stick_pressed = _button_pressed(snapshot, "r3")
+    l1_pressed = _button_pressed(snapshot, "l1")
+    r1_pressed = _button_pressed(snapshot, "r1")
+    l2_button = _button_pressed(snapshot, "l2_button")
+    r2_button = _button_pressed(snapshot, "r2_button")
 
     # Map controller state to semantic actions
     state = {}
     for action, control in keymap.items():
-        if control == 'left_trigger':
-            state[action] = axes[2] > 0.5 if len(axes) > 2 else False
-        elif control == 'right_trigger':
-            state[action] = axes[5] > 0.5 if len(axes) > 5 else False
-        elif control == 'a':
-            state[action] = bool(buttons[0])
-        elif control == 'b':
-            state[action] = bool(buttons[1])
-        elif control == 'x':
-            state[action] = bool(buttons[2])
-        elif control == 'y':
-            state[action] = bool(buttons[3])
-        elif control == 'back':
-            state[action] = bool(buttons[6])
+        if control == 'l2':
+            state[action] = (l2_axis > 0.5) or l2_button
+        elif control == 'r2':
+            state[action] = (r2_axis > 0.5) or r2_button
+        elif control == 'cross':
+            state[action] = _button_pressed(snapshot, "cross")
+        elif control == 'circle':
+            state[action] = _button_pressed(snapshot, "circle")
+        elif control == 'square':
+            state[action] = _button_pressed(snapshot, "square")
+        elif control == 'triangle':
+            state[action] = _button_pressed(snapshot, "triangle")
+        elif control == 'share':
+            state[action] = _button_pressed(snapshot, "share")
         elif control == 'dpad_up':
-            state[action] = hats[1] == 1
+            state[action] = _dpad_direction_pressed(snapshot, "up")
         elif control == 'dpad_down':
-            state[action] = hats[1] == -1
+            state[action] = _dpad_direction_pressed(snapshot, "down")
         elif control == 'dpad_left':
-            state[action] = hats[0] == -1
+            state[action] = _dpad_direction_pressed(snapshot, "left")
         elif control == 'dpad_right':
-            state[action] = hats[0] == 1
+            state[action] = _dpad_direction_pressed(snapshot, "right")
         # Left stick controls (when not pressed)
         elif control == 'left_stick_up':
-            state[action] = (not left_stick_pressed) and (not lb_pressed) and (axes[1] < -0.5) if len(axes) > 1 else False
+            state[action] = (not left_stick_pressed) and (not l1_pressed) and (left_y < -0.5)
         elif control == 'left_stick_down':
-            state[action] = (not left_stick_pressed) and (not lb_pressed) and (axes[1] > 0.5) if len(axes) > 1 else False
+            state[action] = (not left_stick_pressed) and (not l1_pressed) and (left_y > 0.5)
         elif control == 'left_stick_left':
-            state[action] = (not left_stick_pressed) and (not lb_pressed) and (axes[0] < -0.5) if len(axes) > 0 else False
+            state[action] = (not left_stick_pressed) and (not l1_pressed) and (left_x < -0.5)
         elif control == 'left_stick_right':
-            state[action] = (not left_stick_pressed) and (not lb_pressed) and (axes[0] > 0.5) if len(axes) > 0 else False
+            state[action] = (not left_stick_pressed) and (not l1_pressed) and (left_x > 0.5)
         # Right stick controls (when not pressed) - Fixed axis mapping
         elif control == 'right_stick_up':
-            state[action] = (not right_stick_pressed) and (not rb_pressed) and (axes[4] < -0.5) if len(axes) > 4 else False
+            state[action] = (not right_stick_pressed) and (not r1_pressed) and (right_y < -0.5)
         elif control == 'right_stick_down':
-            state[action] = (not right_stick_pressed) and (not rb_pressed) and (axes[4] > 0.5) if len(axes) > 4 else False
+            state[action] = (not right_stick_pressed) and (not r1_pressed) and (right_y > 0.5)
         elif control == 'right_stick_left':
-            state[action] = (not right_stick_pressed) and (not rb_pressed) and (axes[3] < -0.5) if len(axes) > 3 else False
+            state[action] = (not right_stick_pressed) and (not r1_pressed) and (right_x < -0.5)
         elif control == 'right_stick_right':
-            state[action] = (not right_stick_pressed) and (not rb_pressed) and (axes[3] > 0.5) if len(axes) > 3 else False
+            state[action] = (not right_stick_pressed) and (not r1_pressed) and (right_x > 0.5)
         # Left stick pressed controls
         elif control == 'left_stick_pressed_right':
-            state[action] = left_stick_pressed and (not lb_pressed) and (axes[0] > 0.5) if len(axes) > 0 else False
+            state[action] = left_stick_pressed and (not l1_pressed) and (left_x > 0.5)
         elif control == 'left_stick_pressed_left':
-            state[action] = left_stick_pressed and (not lb_pressed) and (axes[0] < -0.5) if len(axes) > 0 else False
+            state[action] = left_stick_pressed and (not l1_pressed) and (left_x < -0.5)
         # Right stick pressed controls - Fixed axis mapping
         elif control == 'right_stick_pressed_right':
-            state[action] = right_stick_pressed and (not rb_pressed) and (axes[3] > 0.5) if len(axes) > 3 else False
+            state[action] = right_stick_pressed and (not r1_pressed) and (right_x > 0.5)
         elif control == 'right_stick_pressed_left':
-            state[action] = right_stick_pressed and (not rb_pressed) and (axes[3] < -0.5) if len(axes) > 3 else False
-        # LB pressed controls (only when stick is moved)
-        elif control == 'lb_up':
-            state[action] = lb_pressed and (abs(axes[1]) > 0.5) and (axes[1] < -0.5) if len(axes) > 1 else False
-        elif control == 'lb_down':
-            state[action] = lb_pressed and (abs(axes[1]) > 0.5) and (axes[1] > 0.5) if len(axes) > 1 else False
-        elif control == 'lb_right':
-            state[action] = lb_pressed and (abs(axes[0]) > 0.5) and (axes[0] > 0.5) if len(axes) > 0 else False
-        elif control == 'lb_left':
-            state[action] = lb_pressed and (abs(axes[0]) > 0.5) and (axes[0] < -0.5) if len(axes) > 0 else False
-        # RB pressed controls (only when stick is moved)
-        elif control == 'rb_up':
-            state[action] = rb_pressed and (abs(axes[4]) > 0.5) and (axes[4] < -0.5) if len(axes) > 4 else False
-        elif control == 'rb_down':
-            state[action] = rb_pressed and (abs(axes[4]) > 0.5) and (axes[4] > 0.5) if len(axes) > 4 else False
-        elif control == 'rb_right':
-            state[action] = rb_pressed and (abs(axes[3]) > 0.5) and (axes[3] > 0.5) if len(axes) > 3 else False
-        elif control == 'rb_left':
-            state[action] = rb_pressed and (abs(axes[3]) > 0.5) and (axes[3] < -0.5) if len(axes) > 3 else False
+            state[action] = right_stick_pressed and (not r1_pressed) and (right_x < -0.5)
+        # L1 pressed controls (only when stick is moved)
+        elif control == 'l1_up':
+            state[action] = l1_pressed and (left_y < -0.5)
+        elif control == 'l1_down':
+            state[action] = l1_pressed and (left_y > 0.5)
+        elif control == 'l1_right':
+            state[action] = l1_pressed and (left_x > 0.5)
+        elif control == 'l1_left':
+            state[action] = l1_pressed and (left_x < -0.5)
+        # R1 pressed controls (only when stick is moved)
+        elif control == 'r1_up':
+            state[action] = r1_pressed and (right_y < -0.5)
+        elif control == 'r1_down':
+            state[action] = r1_pressed and (right_y > 0.5)
+        elif control == 'r1_right':
+            state[action] = r1_pressed and (right_x > 0.5)
+        elif control == 'r1_left':
+            state[action] = r1_pressed and (right_x < -0.5)
         else:
             state[action] = False
     return state
 
-def get_base_action(joystick, robot):
+
+def debug_print_controller_state(snapshot, left_state, right_state, base_action, speed_multiplier):
     """
-    Get base action from XBOX controller input - simplified to only forward/backward and rotate.
+    Print controller debug info when state changes to avoid spamming the console.
     """
-    # Read controller state
-    buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
-    hats = joystick.get_hat(0) if joystick.get_numhats() > 0 else (0, 0)
-    
+    if not DEBUG_CONTROLLER:
+        return
+
+    global _previous_debug_state
+
+    axes = snapshot.get("axes", [])
+    buttons = snapshot.get("buttons", [])
+    hat = snapshot.get("hat", (0, 0))
+
+    left_actions = frozenset(action for action, pressed in left_state.items() if pressed)
+    if left_actions != _previous_debug_state["left_actions"]:
+        left_output = sorted(left_actions) if left_actions else []
+        print(f"[DEBUG][LEFT] Active actions: {left_output}")
+        _previous_debug_state["left_actions"] = left_actions
+
+    right_actions = frozenset(action for action, pressed in right_state.items() if pressed)
+    if right_actions != _previous_debug_state["right_actions"]:
+        right_output = sorted(right_actions) if right_actions else []
+        print(f"[DEBUG][RIGHT] Active actions: {right_output}")
+        _previous_debug_state["right_actions"] = right_actions
+
+    pressed_buttons = tuple(i for i, pressed in enumerate(buttons) if pressed)
+    if pressed_buttons != _previous_debug_state["buttons"]:
+        print(f"[DEBUG][BUTTONS] Pressed indices: {pressed_buttons if pressed_buttons else ('-',)}")
+        _previous_debug_state["buttons"] = pressed_buttons
+
+    if hat != _previous_debug_state["hat"]:
+        print(f"[DEBUG][HAT] Position: {hat}")
+        _previous_debug_state["hat"] = hat
+
+    active_axes = tuple((idx, round(value, 2)) for idx, value in enumerate(axes) if abs(value) > 0.2)
+    if active_axes != _previous_debug_state["axes"]:
+        if active_axes:
+            axis_str = ", ".join(f"{idx}:{val:+.2f}" for idx, val in active_axes)
+        else:
+            axis_str = "-"
+        print(f"[DEBUG][AXES] Active: {axis_str}")
+        _previous_debug_state["axes"] = active_axes
+
+    base_items = tuple(sorted((key, round(value, 3)) for key, value in base_action.items()))
+    if base_items != _previous_debug_state["base"]:
+        base_output = dict(base_items)
+        print(f"[DEBUG][BASE] Action: {base_output}")
+        _previous_debug_state["base"] = base_items
+
+    if speed_multiplier != _previous_debug_state["speed"]:
+        print(f"[DEBUG][BASE] Speed multiplier: {speed_multiplier}")
+        _previous_debug_state["speed"] = speed_multiplier
+
+def get_base_action(snapshot, robot):
+    """
+    Get base action from PS4 controller input - simplified to only forward/backward and rotate.
+    """
     # Get pressed keys for base control
     pressed_keys = set()
     
     # Map controller inputs to keyboard-like keys for base control
-    if hats[1] == 1:   # D-pad up
+    if _dpad_direction_pressed(snapshot, "up"):   # D-pad up
         pressed_keys.add('k')  # Forward
-    if hats[1] == -1:  # D-pad down
+    if _dpad_direction_pressed(snapshot, "down"):  # D-pad down
         pressed_keys.add('i')  # Backward
-    if hats[0] == -1:  # D-pad left
+    if _dpad_direction_pressed(snapshot, "left"):  # D-pad left
         pressed_keys.add('u')  # Rotate left
-    if hats[0] == 1:   # D-pad right
+    if _dpad_direction_pressed(snapshot, "right"):   # D-pad right
         pressed_keys.add('o')  # Rotate right
     
     # Convert to numpy array and get base action
@@ -376,17 +531,14 @@ def get_base_action(joystick, robot):
     
     return base_action
 
-def get_base_speed_control(joystick):
+def get_base_speed_control(snapshot):
     """
-    Get base speed control from XBOX controller - LB for speed decrease, RB for speed increase.
+    Get base speed control from PS4 controller - L1 for speed decrease, R1 for speed increase.
     Returns speed multiplier (1.0, 2.0, or 3.0) and prints current speed level.
     """
     # Read controller state
-    buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
-    
-    # Get LB and RB states
-    lb_pressed = bool(buttons[4]) if len(buttons) > 4 else False
-    rb_pressed = bool(buttons[5]) if len(buttons) > 5 else False
+    l1_pressed = _button_pressed(snapshot, "l1")
+    r1_pressed = _button_pressed(snapshot, "r1")
     
     # Get current speed level from global variable
     global current_base_speed_level
@@ -394,13 +546,13 @@ def get_base_speed_control(joystick):
         current_base_speed_level = 1  # Default speed level
     
     # Speed control logic
-    if lb_pressed and not rb_pressed:
-        # LB pressed alone - decrease speed
+    if l1_pressed and not r1_pressed:
+        # L1 pressed alone - decrease speed
         if current_base_speed_level > 1:
             current_base_speed_level -= 1
             print(f"[BASE] Speed decreased to level {current_base_speed_level}")
-    elif rb_pressed and not lb_pressed:
-        # RB pressed alone - increase speed
+    elif r1_pressed and not l1_pressed:
+        # R1 pressed alone - increase speed
         if current_base_speed_level < 3:
             current_base_speed_level += 1
             print(f"[BASE] Speed increased to level {current_base_speed_level}")
@@ -474,13 +626,13 @@ def main():
             print(robot)
             return
 
-    init_rerun(session_name="xlerobot_teleop_xbox")
+    init_rerun(session_name="xlerobot_teleop_ps4")
 
-    # Init XBOX controller
+    # Init PS4 controller
     pygame.init()
     pygame.joystick.init()
     if pygame.joystick.get_count() == 0:
-        print("No XBOX controller detected!")
+        print("No PS4 controller detected!")
         return
     joystick = pygame.joystick.Joystick(0)
     joystick.init()
@@ -501,12 +653,12 @@ def main():
     try:
         while True:
             pygame.event.pump()
-            left_key_state = get_xbox_key_state(joystick, LEFT_KEYMAP)
-            right_key_state = get_xbox_key_state(joystick, RIGHT_KEYMAP)
+            snapshot = read_ps4_snapshot(joystick)
+            left_key_state = get_ps4_key_state(snapshot, LEFT_KEYMAP)
+            right_key_state = get_ps4_key_state(snapshot, RIGHT_KEYMAP)
             
-            # Check for global reset (back button)
-            buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
-            global_reset = bool(buttons[6]) if len(buttons) > 6 else False
+            # Check for global reset (share button)
+            global_reset = _button_pressed(snapshot, "share")
             
             # Handle global reset for all components
             if global_reset:
@@ -526,14 +678,16 @@ def main():
             head_action = head_control.p_control_action(robot)
 
             # Get base action and speed control from controller
-            base_action = get_base_action(joystick, robot)
-            speed_multiplier = get_base_speed_control(joystick)
+            base_action = get_base_action(snapshot, robot)
+            speed_multiplier = get_base_speed_control(snapshot)
             
             # Apply speed multiplier to base actions if they exist
             if base_action:
                 for key in base_action:
                     if 'vel' in key or 'velocity' in key:  # Apply to velocity commands
                         base_action[key] *= speed_multiplier
+
+            debug_print_controller_state(snapshot, left_key_state, right_key_state, base_action, speed_multiplier)
 
             # Merge all actions
             action = {**left_action, **right_action, **head_action, **base_action}

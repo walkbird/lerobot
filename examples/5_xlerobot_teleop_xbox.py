@@ -31,7 +31,7 @@ LEFT_KEYMAP = {
     # L2 controls left gripper
     'gripper+': 'l2',
     # Head motors
-    "head_motor_1+": 'square', "head_motor_1-": 'circle',
+    "head_motor_1+": 'circle', "head_motor_1-": 'square',
     "head_motor_2+": 'cross', "head_motor_2-": 'triangle',
 }
 RIGHT_KEYMAP = {

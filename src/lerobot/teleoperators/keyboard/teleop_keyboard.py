@@ -60,6 +60,7 @@ class KeyboardTeleop(Teleoperator):
         self.current_pressed = {}
         self.listener = None
         self.logs = {}
+        self._connected = False
 
     @property
     def action_features(self) -> dict:
@@ -75,7 +76,7 @@ class KeyboardTeleop(Teleoperator):
 
     @property
     def is_connected(self) -> bool:
-        return PYNPUT_AVAILABLE and isinstance(self.listener, keyboard.Listener) and self.listener.is_alive()
+        return self._connected
 
     @property
     def is_calibrated(self) -> bool:
@@ -97,6 +98,8 @@ class KeyboardTeleop(Teleoperator):
         else:
             logging.info("pynput not available - skipping local keyboard listener.")
             self.listener = None
+        
+        self._connected = True
 
     def calibrate(self) -> None:
         pass
@@ -128,6 +131,11 @@ class KeyboardTeleop(Teleoperator):
                 "KeyboardTeleop is not connected. You need to run `connect()` before `get_action()`."
             )
 
+        # If pynput is not available, return empty action
+        if not PYNPUT_AVAILABLE:
+            self.logs["read_pos_dt_s"] = time.perf_counter() - before_read_t
+            return {}
+
         self._drain_pressed_keys()
 
         # Generate action based on current key states
@@ -146,6 +154,9 @@ class KeyboardTeleop(Teleoperator):
             )
         if self.listener is not None:
             self.listener.stop()
+        # Reset listener to None to indicate disconnected state
+        self.listener = None
+        self._connected = False
 
 
 class KeyboardEndEffectorTeleop(KeyboardTeleop):

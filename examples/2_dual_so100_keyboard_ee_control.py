@@ -459,8 +459,8 @@ def main():
         from lerobot.teleoperators.keyboard import KeyboardTeleop, KeyboardTeleopConfig
         
         # Configure dual-arm robots
-        arm1_port = "/dev/ttyACM0"
-        arm2_port = "/dev/ttyACM1"
+        arm1_port = "/dev/cu.usbmodem5A7C1204231"
+        arm2_port = "/dev/cu.usbmodem5AB01574801"
         
         print(f"Configuring first arm: {arm1_port}")  
         print(f"Configuring second arm: {arm2_port}")
